@@ -1,0 +1,37 @@
+{
+  "name": "thuso",
+  "private": true,
+  "version": "0.1.0",
+  "description": "THUSO: a modular business workspace for startups, SMEs and corporates. By Coding Wizards.",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @thuso/web",
+    "build": "npm run build -w @thuso/core && npm run build -w @thuso/web && npm run build -w @thuso/functions",
+    "typecheck": "npm run typecheck -w @thuso/core && npm run typecheck -w @thuso/web && npm run typecheck -w @thuso/functions",
+    "test": "npm run test -w @thuso/core && npm run test -w @thuso/functions",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-thuso \"vitest run --config tests/rules/vitest.config.ts\"",
+    "lint": "eslint .",
+    "emulators": "npm run build -w @thuso/functions && firebase emulators:start --project demo-thuso --import ./.emulator-data --export-on-exit",
+    "deploy": "npm run build && firebase deploy"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "@firebase/rules-unit-testing": "^6.0.0",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.13.0",
+    "firebase": "^13.1.0",
+    "firebase-tools": "^15.34.1",
+    "globals": "^16.0.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.0",
+    "vitest": "^5.0.5"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

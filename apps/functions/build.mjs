@@ -1,0 +1,17 @@
+// Bundle the functions together with @thuso/core (a local workspace package that is not on npm).
+// Runtime dependencies listed in package.json stay external and are installed by Cloud Functions.
+import { build } from "esbuild";
+import { readFileSync } from "node:fs";
+
+const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
+await build({
+  entryPoints: ["src/index.ts"],
+  outfile: "lib/index.js",
+  bundle: true,
+  platform: "node",
+  target: "node22",
+  format: "esm",
+  sourcemap: true,
+  external: Object.keys(pkg.dependencies ?? {}),
+  logLevel: "info",
+});

@@ -1,0 +1,210 @@
+rules_version = '2';
+
+// THUSO security rules.
+//
+// 1. Tenant isolation: everything a business owns lives under /businesses/{bizId}
+//    and is only reachable by its members.
+// 2. Roles: owner > admin > staff > viewer. Viewers read, staff write day-to-day data,
+//    owners and admins manage settings, money and tools.
+// 3. Module gate: writes to a module's data are rejected while that module is switched off.
+//    Data is kept, so switching a module back on restores everything.
+// 4. Server-owned fields (invoice numbers, payment links, online payments, counters)
+//    can only be written by Cloud Functions (the Admin SDK bypasses these rules).
+//
+// Write rules use getAfter/existsAfter for membership so the owner's first batch
+// (business + membership + slug) can be validated as a whole.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+    function signedIn() { return request.auth != null; }
+    function verified() { return signedIn() && request.auth.token.email_verified == true; }
+    function bizPath(bizId) { return /databases/$(database)/documents/businesses/$(bizId); }
+    function memberPath(bizId) { return /databases/$(database)/documents/businesses/$(bizId)/members/$(request.auth.uid); }
+
+    // Reads: the state before the request.
+    function isMember(bizId) { return verified() && exists(memberPath(bizId)); }
+    function readerRole(bizId) { return get(memberPath(bizId)).data.role; }
+    function canManageRead(bizId) { return isMember(bizId) && readerRole(bizId) in ['owner', 'admin']; }
+
+    // Writes: the state after the whole batch.
+    function memberAfter(bizId) { return verified() && existsAfter(memberPath(bizId)); }
+    function roleAfter(bizId) { return getAfter(memberPath(bizId)).data.role; }
+    function canWrite(bizId) { return memberAfter(bizId) && roleAfter(bizId) in ['owner', 'admin', 'staff']; }
+    function canManage(bizId) { return memberAfter(bizId) && roleAfter(bizId) in ['owner', 'admin']; }
+    function bizAfter(bizId) { return getAfter(bizPath(bizId)).data; }
+    function moduleOn(bizId, m) { return m in ['customers', 'assistant'] || m in bizAfter(bizId).enabledModules; }
+
+    function incoming() { return request.resource.data; }
+    function unchanged(fields) { return !incoming().diff(resource.data).affectedKeys().hasAny(fields); }
+    function isCents(v) { return v is int && v >= 0; }
+    function isStr(v, max) { return v is string && v.size() <= max; }
+    function idMatches(id) { return incoming().id == id; }
+
+    // ---------- users ----------
+    match /users/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && incoming().keys().hasOnly(['name', 'email', 'activeBizId', 'createdAt', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // ---------- public web addresses ----------
+    match /slugs/{slug} {
+      allow get: if signedIn();
+      allow list, update, delete: if false;
+      // Claimable only in the same batch that creates the business it points to.
+      allow create: if verified()
+        && slug.matches('^[a-z0-9]([a-z0-9-]{0,48}[a-z0-9])?$')
+        && incoming().keys().hasOnly(['bizId'])
+        && !exists(bizPath(incoming().bizId))
+        && bizAfter(incoming().bizId).ownerId == request.auth.uid
+        && bizAfter(incoming().bizId).slug == slug;
+    }
+
+    // ---------- businesses ----------
+    match /businesses/{bizId} {
+      allow read: if isMember(bizId);
+      allow delete: if false;
+
+      allow create: if verified()
+        && idMatches(bizId)
+        && incoming().ownerId == request.auth.uid
+        && incoming().plan == 'free'
+        && isStr(incoming().name, 80) && incoming().name.size() >= 2
+        && incoming().enabledModules.hasAll(['customers', 'assistant'])
+        && incoming().enabledModules.hasOnly(['customers', 'assistant', 'bookings', 'invoicing', 'stock'])
+        && existsAfter(memberPath(bizId))
+        && existsAfter(/databases/$(database)/documents/slugs/$(incoming().slug));
+
+      allow update: if canManage(bizId)
+        && unchanged(['id', 'ownerId', 'slug', 'plan', 'createdAt', 'currency'])
+        && isStr(incoming().name, 80) && incoming().name.size() >= 2
+        && incoming().enabledModules.hasAll(['customers', 'assistant'])
+        && incoming().enabledModules.hasOnly(['customers', 'assistant', 'bookings', 'invoicing', 'stock'])
+        && incoming().paymentTermsDays is int;
+
+      // ---------- members ----------
+      match /members/{uid} {
+        allow read: if isMember(bizId);
+        // The owner membership is created together with a brand new business.
+        allow create: if verified() && uid == request.auth.uid
+          && incoming().role == 'owner'
+          && incoming().uid == uid
+          && !exists(bizPath(bizId))
+          && bizAfter(bizId).ownerId == request.auth.uid;
+        // Team invitations arrive in a later release. Until then only the owner can edit members,
+        // and nobody can change the owner's own role.
+        allow update: if canManageRead(bizId) && readerRole(bizId) == 'owner'
+          && uid != get(bizPath(bizId)).data.ownerId
+          && incoming().role in ['admin', 'staff', 'viewer'];
+        allow delete: if canManageRead(bizId) && readerRole(bizId) == 'owner' && uid != get(bizPath(bizId)).data.ownerId;
+      }
+
+      // ---------- customers (core) ----------
+      match /customers/{id} {
+        allow read: if isMember(bizId);
+        allow create, update: if canWrite(bizId) && idMatches(id)
+          && isStr(incoming().name, 80)
+          && isStr(incoming().phone, 20) && isStr(incoming().email, 120)
+          && incoming().preferredChannel in ['whatsapp', 'sms', 'email']
+          && incoming().archived is bool;
+        allow delete: if false;
+      }
+
+      // ---------- bookings module ----------
+      match /services/{id} {
+        allow read: if isMember(bizId);
+        allow create, update: if canWrite(bizId) && moduleOn(bizId, 'bookings') && idMatches(id)
+          && isStr(incoming().name, 80)
+          && incoming().durationMinutes is int && incoming().durationMinutes >= 5
+          && isCents(incoming().priceCents) && isCents(incoming().depositCents)
+          && incoming().depositCents <= incoming().priceCents;
+        allow delete: if false;
+      }
+
+      match /bookings/{id} {
+        allow read: if isMember(bizId);
+        allow create, update: if canWrite(bizId) && moduleOn(bizId, 'bookings') && idMatches(id)
+          && incoming().status in ['requested', 'confirmed', 'completed', 'cancelled', 'no_show']
+          && incoming().startAt is int && incoming().endAt is int && incoming().startAt < incoming().endAt
+          && isCents(incoming().priceCents) && isCents(incoming().depositCents);
+        allow delete: if false;
+      }
+
+      // One document per 15-minute block per calendar. Create-only: a second booking that
+      // touches the same block fails, which is what prevents double bookings.
+      match /slotLocks/{lockId} {
+        allow read: if isMember(bizId);
+        allow create: if canWrite(bizId) && moduleOn(bizId, 'bookings')
+          && incoming().keys().hasOnly(['bookingId', 'at'])
+          && incoming().bookingId is string;
+        allow update: if false;
+        allow delete: if canWrite(bizId);
+      }
+
+      // ---------- invoicing module ----------
+      match /invoices/{id} {
+        allow read: if isMember(bizId);
+        // number and paymentLink are written by Cloud Functions only.
+        allow create: if canWrite(bizId) && moduleOn(bizId, 'invoicing') && idMatches(id)
+          && !('number' in incoming()) && !('paymentLink' in incoming())
+          && incoming().status in ['draft', 'sent', 'partially_paid', 'paid']
+          && isCents(incoming().totalCents) && isCents(incoming().paidCents)
+          && incoming().paidCents <= incoming().totalCents
+          && incoming().lines is list && incoming().lines.size() >= 1 && incoming().lines.size() <= 50;
+        allow update: if canWrite(bizId) && moduleOn(bizId, 'invoicing')
+          && unchanged(['id', 'number', 'paymentLink', 'createdAt', 'customerId', 'lines', 'totalCents', 'subtotalCents', 'vatCents'])
+          && incoming().status in ['draft', 'sent', 'partially_paid', 'paid', 'cancelled']
+          && isCents(incoming().paidCents)
+          // Money received and cancellations are for owners and admins.
+          && ((incoming().paidCents == resource.data.paidCents && incoming().status != 'cancelled') || canManage(bizId));
+        allow delete: if false;
+      }
+
+      match /payments/{id} {
+        allow read: if isMember(bizId);
+        // Online (card) payments are recorded by the verified webhook only.
+        allow create: if canManage(bizId) && moduleOn(bizId, 'invoicing') && idMatches(id)
+          && incoming().provider == 'manual'
+          && incoming().method in ['cash', 'eft']
+          && isCents(incoming().amountCents) && incoming().amountCents > 0
+          && incoming().recordedBy == request.auth.uid;
+        allow update, delete: if false;
+      }
+
+      // ---------- stock module ----------
+      match /stockItems/{id} {
+        allow read: if isMember(bizId);
+        allow create, update: if canWrite(bizId) && moduleOn(bizId, 'stock') && idMatches(id)
+          && isStr(incoming().name, 80)
+          // quantity only ever changes through atomic increments from stock movements
+          && (!('quantity' in incoming()) || incoming().quantity is number)
+          && isCents(incoming().priceCents) && isCents(incoming().costCents);
+        allow delete: if false;
+      }
+
+      match /stockMovements/{id} {
+        allow read: if isMember(bizId);
+        allow create: if canWrite(bizId) && moduleOn(bizId, 'stock') && idMatches(id)
+          && incoming().delta is number && incoming().delta != 0
+          && incoming().by == request.auth.uid;
+        allow update, delete: if false;
+      }
+
+      // ---------- audit log ----------
+      match /auditLog/{id} {
+        allow read: if canManageRead(bizId);
+        allow create: if memberAfter(bizId) && idMatches(id) && incoming().actorId == request.auth.uid;
+        allow update, delete: if false;
+      }
+
+      // ---------- server only ----------
+      match /counters/{doc} { allow read, write: if false; }
+      match /private/{doc} { allow read, write: if false; }
+    }
+
+    // Anything not matched above is denied.
+  }
+}
