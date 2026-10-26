@@ -45,13 +45,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }).catch(() => undefined);
   }, [user]);
 
-  const userDoc = useLiveDoc<UserDoc>(user ? `${C.users}/${user.uid}` : null, (_id, d) => d as UserDoc);
-  const bizId = userDoc.data?.activeBizId ?? null;
+  const userDoc = useLiveDoc<UserDoc>(user ? `${C.users}/${user.uid}` : null, (_id, d) => d as UserDoc, { trackPending: true });
+  // A new business is readable only once the server has its membership; listening earlier is
+  // rejected by the rules and the listener never recovers.
+  const bizId = userDoc.pending ? null : userDoc.data?.activeBizId ?? null;
   const business = useLiveDoc(verified && bizId ? `${C.businesses}/${bizId}` : null, fromStored.business);
   const member = useLiveDoc(verified && bizId && user ? `${C.businesses}/${bizId}/${C.members}/${user.uid}` : null, fromStored.member);
 
   const value = useMemo<Session>(() => {
-    const businessReady = !user || !verified || (!userDoc.loading && (!bizId || (!business.loading && !member.loading)));
+    const businessReady = !user || !verified || (!userDoc.loading && !userDoc.pending && (!bizId || (!business.loading && !member.loading)));
     return {
       ready: authReady,
       user,
@@ -62,7 +64,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       actor: { uid: user?.uid ?? "", name: member.data?.name || user?.displayName || user?.email || "Member" },
       businessReady,
     };
-  }, [authReady, user, verified, userDoc.loading, bizId, business.data, business.loading, member.data, member.loading]);
+  }, [authReady, user, verified, userDoc.loading, userDoc.pending, bizId, business.data, business.loading, member.data, member.loading]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

@@ -11,15 +11,26 @@ export interface Live<T> {
   readonly fromCache: boolean;
 }
 
-export function useLiveDoc<T>(path: string | null, map: (id: string, d: Record<string, unknown>) => T): Live<T | null> {
-  const [state, setState] = useState<Live<T | null>>({ data: null, loading: !!path, error: null, fromCache: false });
+export interface LiveDoc<T> extends Live<T> {
+  /** True while the document holds local writes the server has not confirmed yet. */
+  readonly pending: boolean;
+}
+
+export function useLiveDoc<T>(
+  path: string | null,
+  map: (id: string, d: Record<string, unknown>) => T,
+  opts: { trackPending?: boolean } = {},
+): LiveDoc<T | null> {
+  const [state, setState] = useState<LiveDoc<T | null> & { path: string | null }>({ path, data: null, loading: !!path, error: null, fromCache: false, pending: false });
   useEffect(() => {
-    if (!path) { setState({ data: null, loading: false, error: null, fromCache: false }); return; }
-    setState((s) => ({ ...s, loading: true }));
-    return onSnapshot(doc(db, path), { includeMetadataChanges: false }, (s) => {
-      setState({ data: s.exists() ? map(s.id, s.data()) : null, loading: false, error: null, fromCache: s.metadata.fromCache });
-    }, (error) => setState({ data: null, loading: false, error, fromCache: false }));
+    if (!path) { setState({ path, data: null, loading: false, error: null, fromCache: false, pending: false }); return; }
+    setState((s) => ({ ...s, path, loading: true }));
+    return onSnapshot(doc(db, path), { includeMetadataChanges: !!opts.trackPending }, (s) => {
+      setState({ path, data: s.exists() ? map(s.id, s.data()) : null, loading: false, error: null, fromCache: s.metadata.fromCache, pending: s.metadata.hasPendingWrites });
+    }, (error) => setState({ path, data: null, loading: false, error, fromCache: false, pending: false }));
   }, [path]);
+  // Until the effect has subscribed to a new path, the old state must not read as "loaded, no document".
+  if (state.path !== path) return { data: null, loading: !!path, error: null, fromCache: false, pending: false };
   return state;
 }
 
