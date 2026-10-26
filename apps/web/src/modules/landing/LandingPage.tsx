@@ -118,7 +118,6 @@ export default function LandingPage() {
         <div className="mx-auto flex max-w-[1200px] flex-wrap items-center justify-between gap-8 px-6 py-12">
           <Logo inverted />
           <nav aria-label="Footer" className="flex flex-wrap gap-6 text-[14px]"><Link to="/legal/privacy">Privacy</Link><Link to="/legal/terms">Terms</Link><a href="mailto:hello@codingwizards.co.za">Contact</a></nav>
-          <div className="text-[14px]">A Coding Wizards product</div>
         </div>
       </footer>
     </div>

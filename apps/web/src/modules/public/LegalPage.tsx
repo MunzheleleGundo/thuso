@@ -17,7 +17,7 @@ export default function LegalPage() {
           <p className="rounded-[10px] bg-warn-50 px-4 py-3 font-semibold text-warn-700">Draft. This page must be replaced with reviewed text before THUSO is offered to the public.</p>
           {privacy ? (
             <>
-              <p>THUSO, a Coding Wizards product, processes the personal information you give us (your name, email and business details) and the information you store about your customers, so that the service works.</p>
+              <p>THUSO processes the personal information you give us (your name, email and business details) and the information you store about your customers, so that the service works.</p>
               <p>Customer details are used only by the business that collected them. Businesses must record each customer's consent before sending reminders.</p>
               <p>You can ask for a copy of your data or for it to be deleted. Invoices may be kept for as long as tax law requires.</p>
             </>
